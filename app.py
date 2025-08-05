@@ -1,5 +1,8 @@
 from flask import Flask, request, jsonify
 from utils import *
+from firebase_config import get_firestore_client
+from datetime import datetime
+import uuid
 
 app = Flask(__name__)
 
@@ -52,6 +55,47 @@ def simulate_outbreak():
     
     except (TypeError, ValueError):
         return jsonify({'error': 'Required parameters: R0, population_size, ifr. Optional: illness_length (default 7)'}), 400
+
+@app.route('/save_simulation', methods=['POST'])
+def save_simulation():
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+        
+        # Generate a unique ID for this simulation
+        simulation_id = str(uuid.uuid4())
+        
+        # Prepare the document to save
+        simulation_doc = {
+            'id': simulation_id,
+            'timestamp': datetime.utcnow(),
+            'parameters': {
+                'R0': data.get('R0'),
+                'population_size': data.get('population_size'),
+                'ifr': data.get('ifr'),
+                'illness_length': data.get('illness_length')
+            },
+            'results': {
+                'infected': data.get('infected', {}),
+                'deaths': data.get('deaths', {}),
+                'immune': data.get('immune', {})
+            }
+        }
+        
+        # Save to Firestore
+        db = get_firestore_client()
+        db.collection('outbreak_simulations').document(simulation_id).set(simulation_doc)
+        
+        return jsonify({
+            'success': True,
+            'simulation_id': simulation_id,
+            'message': 'Simulation saved successfully'
+        })
+    
+    except Exception as e:
+        return jsonify({'error': f'Failed to save simulation: {str(e)}'}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)

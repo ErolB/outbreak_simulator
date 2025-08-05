@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { saveSimulationToFirebase, type SimulationData } from '../../lib/firebaseService';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -40,6 +41,8 @@ export default function OutbreakSimulation() {
   const [result, setResult] = useState<SimulationResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState('');
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
@@ -54,6 +57,7 @@ export default function OutbreakSimulation() {
     setLoading(true);
     setError('');
     setResult(null);
+    setSaveMessage('');
 
     try {
       const params = new URLSearchParams({
@@ -75,6 +79,40 @@ export default function OutbreakSimulation() {
       setError('Failed to connect to the API. Make sure the Flask server is running on port 5000.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSaveSimulation = async () => {
+    if (!result) {
+      setSaveMessage('No simulation data to save');
+      return;
+    }
+
+    setSaving(true);
+    setSaveMessage('');
+
+    try {
+      const simulationData: SimulationData = {
+        R0: formData.R0,
+        population_size: formData.population_size,
+        ifr: formData.ifr,
+        illness_length: formData.illness_length,
+        infected: result.infected,
+        deaths: result.deaths,
+        immune: result.immune
+      };
+
+      const saveResult = await saveSimulationToFirebase(simulationData);
+      
+      if (saveResult.success) {
+        setSaveMessage(`✅ ${saveResult.message} (ID: ${saveResult.simulation_id})`);
+      } else {
+        setSaveMessage(`❌ ${saveResult.error}`);
+      }
+    } catch (error) {
+      setSaveMessage(`❌ Failed to save: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -261,6 +299,27 @@ export default function OutbreakSimulation() {
 
             {result && (
               <div className="space-y-6">
+                <div className="flex justify-between items-center">
+                  <h3 className="text-lg font-medium">Simulation Results</h3>
+                  <button
+                    onClick={handleSaveSimulation}
+                    disabled={saving}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-medium rounded-lg transition-colors"
+                  >
+                    {saving ? 'Saving...' : 'Save to Firebase'}
+                  </button>
+                </div>
+
+                {saveMessage && (
+                  <div className={`p-3 rounded-lg ${
+                    saveMessage.includes('✅') 
+                      ? 'bg-green-100 border border-green-400 text-green-700' 
+                      : 'bg-red-100 border border-red-400 text-red-700'
+                  }`}>
+                    {saveMessage}
+                  </div>
+                )}
+
                 <div>
                   <h3 className="text-lg font-medium mb-3">Infection Rate Over Time</h3>
                   <div className="h-64">
