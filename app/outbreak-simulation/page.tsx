@@ -2,7 +2,8 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { saveSimulationToFirebase, type SimulationData } from '../../lib/firebaseService';
+import { saveSimulationToFirebase, loadSimulationsFromFirebase, type SimulationData, type LoadedSimulation } from '../../lib/firebaseService';
+import { useAuth } from '../../lib/auth';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -32,6 +33,7 @@ interface SimulationResult {
 }
 
 export default function OutbreakSimulation() {
+  const { user, signOut } = useAuth();
   const [formData, setFormData] = useState({
     R0: '',
     population_size: '',
@@ -43,6 +45,9 @@ export default function OutbreakSimulation() {
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
+  const [loadedSimulations, setLoadedSimulations] = useState<LoadedSimulation[]>([]);
+  const [loadingSimulations, setLoadingSimulations] = useState(false);
+  const [showLoadedSimulations, setShowLoadedSimulations] = useState(false);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
@@ -116,6 +121,47 @@ export default function OutbreakSimulation() {
     }
   };
 
+  const handleLoadSimulations = async () => {
+    setLoadingSimulations(true);
+    setError('');
+
+    try {
+      const loadResult = await loadSimulationsFromFirebase(10);
+      
+      if (loadResult.success && loadResult.simulations) {
+        setLoadedSimulations(loadResult.simulations);
+        setShowLoadedSimulations(true);
+      } else {
+        setError(loadResult.error || 'Failed to load simulations');
+      }
+    } catch (error) {
+      setError(`Failed to load simulations: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setLoadingSimulations(false);
+    }
+  };
+
+  const handleSelectSimulation = (simulation: LoadedSimulation) => {
+    // Load the simulation parameters into the form
+    setFormData({
+      R0: simulation.parameters.R0.toString(),
+      population_size: simulation.parameters.population_size.toString(),
+      ifr: simulation.parameters.ifr.toString(),
+      illness_length: simulation.parameters.illness_length.toString()
+    });
+
+    // Load the simulation results
+    setResult({
+      infected: simulation.results.infected,
+      deaths: simulation.results.deaths,
+      immune: simulation.results.immune
+    });
+
+    // Close the loaded simulations panel
+    setShowLoadedSimulations(false);
+    setSaveMessage('');
+  };
+
   const createChartData = (data: { [key: string]: number }, label: string, color: string) => {
     const days = Object.keys(data).map(Number).sort((a, b) => a - b);
     const values = days.map(day => data[day]);
@@ -163,18 +209,75 @@ export default function OutbreakSimulation() {
   return (
     <div className="font-sans min-h-screen flex flex-col items-center justify-start p-8">
       <div className="w-full max-w-6xl">
-        <div className="mb-8">
+        <div className="mb-8 flex justify-between items-center">
           <Link 
             href="/"
             className="text-blue-600 hover:text-blue-800 underline"
           >
             ← Back to Home
           </Link>
+          
+          <div className="flex items-center space-x-4">
+            <span className="text-sm text-gray-600">
+              Welcome, {user?.displayName || user?.email}
+            </span>
+            <button
+              onClick={signOut}
+              className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors"
+            >
+              Sign Out
+            </button>
+          </div>
         </div>
 
         <h1 className="text-3xl font-bold text-center mb-8">
           Outbreak Simulation
         </h1>
+
+        {showLoadedSimulations && (
+          <div className="mb-8 bg-white p-6 rounded-lg shadow-lg">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-semibold">Previous Simulations</h2>
+              <button
+                onClick={() => setShowLoadedSimulations(false)}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                ✕
+              </button>
+            </div>
+            
+            <div className="space-y-3 max-h-96 overflow-y-auto">
+              {loadedSimulations.map((simulation) => (
+                <div
+                  key={simulation.id}
+                  className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
+                  onClick={() => handleSelectSimulation(simulation)}
+                >
+                  <div className="flex justify-between items-start mb-2">
+                    <div className="text-sm font-medium text-gray-900">
+                      {simulation.timestamp.toLocaleDateString()} {simulation.timestamp.toLocaleTimeString()}
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      ID: {simulation.id.slice(0, 8)}...
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-sm text-gray-600">
+                    <div>R0: {simulation.parameters.R0}</div>
+                    <div>Population: {simulation.parameters.population_size.toLocaleString()}</div>
+                    <div>IFR: {(simulation.parameters.ifr * 100).toFixed(2)}%</div>
+                    <div>Illness Length: {simulation.parameters.illness_length} days</div>
+                  </div>
+                </div>
+              ))}
+              
+              {loadedSimulations.length === 0 && (
+                <div className="text-center text-gray-500 py-8">
+                  No saved simulations found
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {/* Form Section */}
@@ -273,6 +376,16 @@ export default function OutbreakSimulation() {
                 {loading ? 'Running Simulation...' : 'Run Simulation'}
               </button>
             </form>
+
+            <div className="mt-4">
+              <button
+                onClick={handleLoadSimulations}
+                disabled={loadingSimulations}
+                className="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-medium rounded-lg transition-colors"
+              >
+                {loadingSimulations ? 'Loading...' : 'Load Previous Simulations'}
+              </button>
+            </div>
 
             {error && (
               <div className="mt-4 p-4 bg-red-100 border border-red-400 text-red-700 rounded-lg">

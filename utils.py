@@ -18,9 +18,9 @@ class Person:
         return self.immune
     
     def expose(self):
-        if self.infected:
+        if self.is_infected():
             return
-        if not self.immune:
+        if not self.is_immune():
             self.infected = True
             self.days_infected = 0
     

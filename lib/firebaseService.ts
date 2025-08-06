@@ -1,5 +1,6 @@
-import { db } from './firebase';
-import { collection, addDoc, doc, setDoc } from 'firebase/firestore';
+import { db, auth } from './firebase';
+import { collection, addDoc, doc, setDoc, getDocs, query, orderBy, limit, where, getDoc, serverTimestamp, increment } from 'firebase/firestore';
+import { User } from 'firebase/auth';
 
 export interface SimulationData {
   R0: string;
@@ -18,42 +19,57 @@ export interface SimulationResult {
   error?: string;
 }
 
+export interface LoadedSimulation {
+  id: string;
+  timestamp: Date;
+  userId: string;
+  parameters: {
+    R0: number;
+    population_size: number;
+    ifr: number;
+    illness_length: number;
+  };
+  results: {
+    infected: { [key: string]: number };
+    deaths: { [key: string]: number };
+    immune: { [key: string]: number };
+  };
+}
+
+export interface LoadSimulationsResult {
+  success: boolean;
+  simulations?: LoadedSimulation[];
+  error?: string;
+}
+
+export interface UserProfile {
+  uid: string;
+  email: string;
+  displayName: string | null;
+  photoURL: string | null;
+  createdAt: Date;
+  lastLoginAt: Date;
+  simulationCount: number;
+}
+
+export interface UserResult {
+  success: boolean;
+  user?: UserProfile;
+  error?: string;
+}
+
 export const saveSimulationToFirebase = async (data: SimulationData): Promise<SimulationResult> => {
   try {
-    // Save via Flask backend to ensure proper server-side validation and processing
-    const response = await fetch('http://localhost:5000/save_simulation', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(data),
-    });
-
-    const result = await response.json();
-    
-    if (response.ok) {
-      return {
-        success: true,
-        simulation_id: result.simulation_id,
-        message: result.message
-      };
-    } else {
+    // Check if user is authenticated
+    if (!auth.currentUser) {
       return {
         success: false,
-        error: result.error || 'Failed to save simulation'
+        error: 'User must be authenticated to save simulations'
       };
     }
-  } catch (error) {
-    return {
-      success: false,
-      error: `Network error: ${error instanceof Error ? error.message : 'Unknown error'}`
-    };
-  }
-};
 
-export const saveSimulationDirectly = async (data: SimulationData): Promise<SimulationResult> => {
-  try {
     const simulationDoc = {
+      userId: auth.currentUser.uid,
       timestamp: new Date(),
       parameters: {
         R0: parseFloat(data.R0),
@@ -70,11 +86,199 @@ export const saveSimulationDirectly = async (data: SimulationData): Promise<Simu
 
     const docRef = await addDoc(collection(db, 'outbreak_simulations'), simulationDoc);
     
+    // Increment user's simulation count
+    await incrementUserSimulationCount(auth.currentUser.uid);
+    
     return {
       success: true,
       simulation_id: docRef.id,
       message: 'Simulation saved successfully to Firebase'
     };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Firebase error: ${error instanceof Error ? error.message : 'Unknown error'}`
+    };
+  }
+};
+
+
+export const loadSimulationsFromFirebase = async (maxResults: number = 20): Promise<LoadSimulationsResult> => {
+  try {
+    // Check if user is authenticated
+    if (!auth.currentUser) {
+      return {
+        success: false,
+        error: 'User must be authenticated to load simulations'
+      };
+    }
+
+    const simulationsRef = collection(db, 'outbreak_simulations');
+    const q = query(
+      simulationsRef, 
+      where('userId', '==', auth.currentUser.uid),
+      orderBy('timestamp', 'desc'), 
+      limit(maxResults)
+    );
+    const querySnapshot = await getDocs(q);
+    
+    const simulations: LoadedSimulation[] = [];
+    
+    querySnapshot.forEach((doc) => {
+      const data = doc.data();
+      simulations.push({
+        id: doc.id,
+        userId: data.userId,
+        timestamp: data.timestamp.toDate(),
+        parameters: data.parameters,
+        results: data.results
+      });
+    });
+    
+    return {
+      success: true,
+      simulations
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Firebase error: ${error instanceof Error ? error.message : 'Unknown error'}`
+    };
+  }
+};
+
+export const createOrUpdateUserProfile = async (user: User): Promise<UserResult> => {
+  try {
+    const userRef = doc(db, 'users', user.uid);
+    const userSnap = await getDoc(userRef);
+    
+    const userData = {
+      uid: user.uid,
+      email: user.email || '',
+      displayName: user.displayName,
+      photoURL: user.photoURL,
+      lastLoginAt: serverTimestamp(),
+    };
+
+    if (userSnap.exists()) {
+      // Update existing user
+      await setDoc(userRef, userData, { merge: true });
+    } else {
+      // Create new user
+      await setDoc(userRef, {
+        ...userData,
+        createdAt: serverTimestamp(),
+        simulationCount: 0,
+      });
+    }
+
+    return {
+      success: true,
+      user: {
+        uid: user.uid,
+        email: user.email || '',
+        displayName: user.displayName,
+        photoURL: user.photoURL,
+        createdAt: userSnap.exists() ? userSnap.data().createdAt.toDate() : new Date(),
+        lastLoginAt: new Date(),
+        simulationCount: userSnap.exists() ? userSnap.data().simulationCount : 0,
+      }
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Failed to create/update user profile: ${error instanceof Error ? error.message : 'Unknown error'}`
+    };
+  }
+};
+
+export const getUserProfile = async (uid: string): Promise<UserResult> => {
+  try {
+    const userRef = doc(db, 'users', uid);
+    const userSnap = await getDoc(userRef);
+    
+    if (!userSnap.exists()) {
+      return {
+        success: false,
+        error: 'User profile not found'
+      };
+    }
+
+    const data = userSnap.data();
+    return {
+      success: true,
+      user: {
+        uid: data.uid,
+        email: data.email,
+        displayName: data.displayName,
+        photoURL: data.photoURL,
+        createdAt: data.createdAt.toDate(),
+        lastLoginAt: data.lastLoginAt.toDate(),
+        simulationCount: data.simulationCount,
+      }
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Failed to get user profile: ${error instanceof Error ? error.message : 'Unknown error'}`
+    };
+  }
+};
+
+export const incrementUserSimulationCount = async (uid: string): Promise<void> => {
+  try {
+    const userRef = doc(db, 'users', uid);
+    await setDoc(userRef, {
+      simulationCount: increment(1)
+    }, { merge: true });
+  } catch (error) {
+    console.error('Failed to increment simulation count:', error);
+  }
+};
+
+export const loadSimulationById = async (simulationId: string): Promise<LoadSimulationsResult> => {
+  try {
+    // Check if user is authenticated
+    if (!auth.currentUser) {
+      return {
+        success: false,
+        error: 'User must be authenticated to load simulations'
+      };
+    }
+
+    const simulationsRef = collection(db, 'outbreak_simulations');
+    const q = query(
+      simulationsRef,
+      where('userId', '==', auth.currentUser.uid)
+    );
+    const querySnapshot = await getDocs(q);
+    
+    let foundSimulation: LoadedSimulation | null = null;
+    
+    querySnapshot.forEach((doc) => {
+      if (doc.id === simulationId) {
+        const data = doc.data();
+        foundSimulation = {
+          id: doc.id,
+          userId: data.userId,
+          timestamp: data.timestamp.toDate(),
+          parameters: data.parameters,
+          results: data.results
+        };
+      }
+    });
+    
+    if (foundSimulation) {
+      return {
+        success: true,
+        simulations: [foundSimulation]
+      };
+    } else {
+      return {
+        success: false,
+        error: 'Simulation not found or access denied'
+      };
+    }
   } catch (error) {
     return {
       success: false,
