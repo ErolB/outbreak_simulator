@@ -1,5 +1,5 @@
 import { db, auth } from './firebase';
-import { collection, addDoc, doc, setDoc, getDocs, query, orderBy, limit, where, getDoc, serverTimestamp, increment } from 'firebase/firestore';
+import { collection, addDoc, doc, setDoc, getDocs, query, orderBy, limit, where, getDoc, deleteDoc, serverTimestamp, increment } from 'firebase/firestore';
 import { User } from 'firebase/auth';
 
 export interface SimulationData {
@@ -7,6 +7,7 @@ export interface SimulationData {
   population_size: string;
   ifr: string;
   illness_length: string;
+  network_size: string;
   infected: { [key: string]: number };
   deaths: { [key: string]: number };
   immune: { [key: string]: number };
@@ -28,6 +29,7 @@ export interface LoadedSimulation {
     population_size: number;
     ifr: number;
     illness_length: number;
+    network_size?: number;
   };
   results: {
     infected: { [key: string]: number };
@@ -39,6 +41,12 @@ export interface LoadedSimulation {
 export interface LoadSimulationsResult {
   success: boolean;
   simulations?: LoadedSimulation[];
+  error?: string;
+}
+
+export interface DeleteResult {
+  success: boolean;
+  message?: string;
   error?: string;
 }
 
@@ -75,7 +83,8 @@ export const saveSimulationToFirebase = async (data: SimulationData): Promise<Si
         R0: parseFloat(data.R0),
         population_size: parseInt(data.population_size),
         ifr: parseFloat(data.ifr),
-        illness_length: parseInt(data.illness_length)
+        illness_length: parseInt(data.illness_length),
+        network_size: parseInt(data.network_size)
       },
       results: {
         infected: data.infected,
@@ -284,5 +293,63 @@ export const loadSimulationById = async (simulationId: string): Promise<LoadSimu
       success: false,
       error: `Firebase error: ${error instanceof Error ? error.message : 'Unknown error'}`
     };
+  }
+};
+
+export const deleteSimulationFromFirebase = async (simulationId: string): Promise<DeleteResult> => {
+  try {
+    // Check if user is authenticated
+    if (!auth.currentUser) {
+      return {
+        success: false,
+        error: 'User must be authenticated to delete simulations'
+      };
+    }
+
+    // First, verify the simulation belongs to the current user
+    const simulationRef = doc(db, 'outbreak_simulations', simulationId);
+    const simulationSnap = await getDoc(simulationRef);
+
+    if (!simulationSnap.exists()) {
+      return {
+        success: false,
+        error: 'Simulation not found'
+      };
+    }
+
+    const simulationData = simulationSnap.data();
+    if (simulationData.userId !== auth.currentUser.uid) {
+      return {
+        success: false,
+        error: 'Access denied - you can only delete your own simulations'
+      };
+    }
+
+    // Delete the simulation
+    await deleteDoc(simulationRef);
+
+    // Decrement user's simulation count
+    await decrementUserSimulationCount(auth.currentUser.uid);
+
+    return {
+      success: true,
+      message: 'Simulation deleted successfully'
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: `Failed to delete simulation: ${error instanceof Error ? error.message : 'Unknown error'}`
+    };
+  }
+};
+
+export const decrementUserSimulationCount = async (uid: string): Promise<void> => {
+  try {
+    const userRef = doc(db, 'users', uid);
+    await setDoc(userRef, {
+      simulationCount: increment(-1)
+    }, { merge: true });
+  } catch (error) {
+    console.error('Failed to decrement simulation count:', error);
   }
 };

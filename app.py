@@ -1,6 +1,5 @@
 from flask import Flask, request, jsonify
 from utils import *
-from firebase_config import get_firestore_client
 from datetime import datetime
 import uuid
 
@@ -38,6 +37,7 @@ def simulate_outbreak():
         population_size = int(request.args.get('population_size'))
         ifr = float(request.args.get('ifr'))
         illness_length = int(request.args.get('illness_length', 7))  # default to 7 days
+        network_size = int(request.args.get('network_size', 20))  # default to 20
         
         if R0 <= 0:
             return jsonify({'error': 'R0 must be greater than 0'}), 400
@@ -47,14 +47,16 @@ def simulate_outbreak():
             return jsonify({'error': 'ifr must be between 0 and 1'}), 400
         if illness_length <= 0:
             return jsonify({'error': 'illness_length must be greater than 0'}), 400
+        if network_size <= 0 or network_size >= population_size:
+            return jsonify({'error': 'network_size must be between 1 and population_size - 1'}), 400
         
-        outbreak = OutBreak(R0, ifr, illness_length, population_size)
+        outbreak = OutBreak(R0, ifr, illness_length, population_size, network_size)
         result = outbreak.run()
         
         return jsonify(result)
     
     except (TypeError, ValueError):
-        return jsonify({'error': 'Required parameters: R0, population_size, ifr. Optional: illness_length (default 7)'}), 400
+        return jsonify({'error': 'Required parameters: R0, population_size, ifr. Optional: illness_length (default 7), network_size (default 20)'}), 400
 
 @app.route('/save_simulation', methods=['POST'])
 def save_simulation():
@@ -75,7 +77,8 @@ def save_simulation():
                 'R0': data.get('R0'),
                 'population_size': data.get('population_size'),
                 'ifr': data.get('ifr'),
-                'illness_length': data.get('illness_length')
+                'illness_length': data.get('illness_length'),
+                'network_size': data.get('network_size')
             },
             'results': {
                 'infected': data.get('infected', {}),
@@ -84,9 +87,6 @@ def save_simulation():
             }
         }
         
-        # Save to Firestore
-        db = get_firestore_client()
-        db.collection('outbreak_simulations').document(simulation_id).set(simulation_doc)
         
         return jsonify({
             'success': True,

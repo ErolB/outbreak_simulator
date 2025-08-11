@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { saveSimulationToFirebase, loadSimulationsFromFirebase, type SimulationData, type LoadedSimulation } from '../../lib/firebaseService';
+import { saveSimulationToFirebase, loadSimulationsFromFirebase, deleteSimulationFromFirebase, type SimulationData, type LoadedSimulation } from '../../lib/firebaseService';
 import { useAuth } from '../../lib/auth';
 import {
   Chart as ChartJS,
@@ -38,7 +38,8 @@ export default function OutbreakSimulation() {
     R0: '',
     population_size: '',
     ifr: '',
-    illness_length: '7'
+    illness_length: '7',
+    network_size: '20'
   });
   const [result, setResult] = useState<SimulationResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -48,6 +49,9 @@ export default function OutbreakSimulation() {
   const [loadedSimulations, setLoadedSimulations] = useState<LoadedSimulation[]>([]);
   const [loadingSimulations, setLoadingSimulations] = useState(false);
   const [showLoadedSimulations, setShowLoadedSimulations] = useState(false);
+  const [deletingSimulation, setDeletingSimulation] = useState<string | null>(null);
+  const [deleteMessage, setDeleteMessage] = useState('');
+  const [chartKey, setChartKey] = useState(0);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
@@ -63,13 +67,15 @@ export default function OutbreakSimulation() {
     setError('');
     setResult(null);
     setSaveMessage('');
+    setChartKey(prev => prev + 1); // Force chart recreation
 
     try {
       const params = new URLSearchParams({
         R0: formData.R0,
         population_size: formData.population_size,
         ifr: formData.ifr,
-        illness_length: formData.illness_length
+        illness_length: formData.illness_length,
+        network_size: formData.network_size
       });
 
       const response = await fetch(`http://localhost:5000/simulate_outbreak?${params}`);
@@ -102,6 +108,7 @@ export default function OutbreakSimulation() {
         population_size: formData.population_size,
         ifr: formData.ifr,
         illness_length: formData.illness_length,
+        network_size: formData.network_size,
         infected: result.infected,
         deaths: result.deaths,
         immune: result.immune
@@ -147,7 +154,8 @@ export default function OutbreakSimulation() {
       R0: simulation.parameters.R0.toString(),
       population_size: simulation.parameters.population_size.toString(),
       ifr: simulation.parameters.ifr.toString(),
-      illness_length: simulation.parameters.illness_length.toString()
+      illness_length: simulation.parameters.illness_length.toString(),
+      network_size: simulation.parameters.network_size?.toString() || '20'
     });
 
     // Load the simulation results
@@ -157,9 +165,41 @@ export default function OutbreakSimulation() {
       immune: simulation.results.immune
     });
 
+    // Force chart recreation when loading saved simulation
+    setChartKey(prev => prev + 1);
+
     // Close the loaded simulations panel
     setShowLoadedSimulations(false);
     setSaveMessage('');
+  };
+
+  const handleDeleteSimulation = async (simulationId: string, event: React.MouseEvent) => {
+    event.stopPropagation(); // Prevent selecting the simulation
+    
+    if (!confirm('Are you sure you want to delete this simulation? This action cannot be undone.')) {
+      return;
+    }
+
+    setDeletingSimulation(simulationId);
+    setDeleteMessage('');
+
+    try {
+      const deleteResult = await deleteSimulationFromFirebase(simulationId);
+      
+      if (deleteResult.success) {
+        setDeleteMessage(`✅ ${deleteResult.message}`);
+        // Refresh the simulations list
+        await handleLoadSimulations();
+      } else {
+        setDeleteMessage(`❌ ${deleteResult.error}`);
+      }
+    } catch (error) {
+      setDeleteMessage(`❌ Failed to delete: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setDeletingSimulation(null);
+      // Clear message after 3 seconds
+      setTimeout(() => setDeleteMessage(''), 3000);
+    }
   };
 
   const createChartData = (data: { [key: string]: number }, label: string, color: string) => {
@@ -246,19 +286,43 @@ export default function OutbreakSimulation() {
               </button>
             </div>
             
+            {deleteMessage && (
+              <div className={`mb-4 p-3 rounded-lg ${
+                deleteMessage.includes('✅') 
+                  ? 'bg-green-100 border border-green-400 text-green-700' 
+                  : 'bg-red-100 border border-red-400 text-red-700'
+              }`}>
+                {deleteMessage}
+              </div>
+            )}
+            
             <div className="space-y-3 max-h-96 overflow-y-auto">
               {loadedSimulations.map((simulation) => (
                 <div
                   key={simulation.id}
-                  className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
+                  className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors relative"
                   onClick={() => handleSelectSimulation(simulation)}
                 >
                   <div className="flex justify-between items-start mb-2">
                     <div className="text-sm font-medium text-gray-900">
                       {simulation.timestamp.toLocaleDateString()} {simulation.timestamp.toLocaleTimeString()}
                     </div>
-                    <div className="text-xs text-gray-500">
-                      ID: {simulation.id.slice(0, 8)}...
+                    <div className="flex items-center space-x-2">
+                      <div className="text-xs text-gray-500">
+                        ID: {simulation.id.slice(0, 8)}...
+                      </div>
+                      <button
+                        onClick={(e) => handleDeleteSimulation(simulation.id, e)}
+                        disabled={deletingSimulation === simulation.id}
+                        className="text-red-500 hover:text-red-700 disabled:opacity-50 p-1 rounded hover:bg-red-100 transition-colors"
+                        title="Delete simulation"
+                      >
+                        {deletingSimulation === simulation.id ? (
+                          <div className="w-4 h-4 border-2 border-red-500 border-t-transparent rounded-full animate-spin"></div>
+                        ) : (
+                          '🗑️'
+                        )}
+                      </button>
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-2 text-sm text-gray-600">
@@ -266,6 +330,7 @@ export default function OutbreakSimulation() {
                     <div>Population: {simulation.parameters.population_size.toLocaleString()}</div>
                     <div>IFR: {(simulation.parameters.ifr * 100).toFixed(2)}%</div>
                     <div>Illness Length: {simulation.parameters.illness_length} days</div>
+                    <div>Network Size: {simulation.parameters.network_size || 20}</div>
                   </div>
                 </div>
               ))}
@@ -368,6 +433,26 @@ export default function OutbreakSimulation() {
                 </p>
               </div>
 
+              <div>
+                <label htmlFor="network_size" className="block text-sm font-medium text-gray-700 mb-2">
+                  Network Size:
+                </label>
+                <input
+                  type="number"
+                  id="network_size"
+                  name="network_size"
+                  value={formData.network_size}
+                  onChange={handleInputChange}
+                  min="1"
+                  placeholder="e.g., 20"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  required
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Number of contacts each person can potentially infect
+                </p>
+              </div>
+
               <button
                 type="submit"
                 disabled={loading}
@@ -437,6 +522,7 @@ export default function OutbreakSimulation() {
                   <h3 className="text-lg font-medium mb-3">Infection Rate Over Time</h3>
                   <div className="h-64">
                     <Line
+                      key={`infected-${chartKey}`}
                       data={createChartData(result.infected, 'Infection Rate', '#ef4444')}
                       options={{
                         ...chartOptions,
@@ -456,6 +542,7 @@ export default function OutbreakSimulation() {
                   <h3 className="text-lg font-medium mb-3">Death Rate Over Time</h3>
                   <div className="h-64">
                     <Line
+                      key={`deaths-${chartKey}`}
                       data={createChartData(result.deaths, 'Death Rate', '#1f2937')}
                       options={{
                         ...chartOptions,
@@ -475,6 +562,7 @@ export default function OutbreakSimulation() {
                   <h3 className="text-lg font-medium mb-3">Immunity Rate Over Time</h3>
                   <div className="h-64">
                     <Line
+                      key={`immune-${chartKey}`}
                       data={createChartData(result.immune, 'Immunity Rate', '#059669')}
                       options={{
                         ...chartOptions,
